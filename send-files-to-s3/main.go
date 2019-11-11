@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
+// constants
 const (
 	S3Region         = "eu-west-2"
 	S3Bucket         = "dfp-datalake-london"
@@ -26,6 +27,12 @@ const (
 )
 
 func main() {
+	fmt.Print(`
+	// Accepts a directory as the first argument - that contains a set of directories representing crime data named in the format YYYY-MM
+	// zips the content of these directories and uploads them to S3 to the data lake bucket under crimes/data.police.uk
+	// Creates the years as directories and the month files as zip files.
+	`)
+
 	sourceDirPath := "."
 
 	if len(os.Args) >= 2 {
@@ -65,7 +72,8 @@ func main() {
 			continue
 		}
 
-		fmt.Println("\nscanning: " + resolvedPath + "\n")
+		// Read the files from the directory
+		log.Print("\nscanning: " + resolvedPath + "\n")
 		files, err := ioutil.ReadDir(resolvedPath)
 
 		if err != nil {
@@ -115,6 +123,7 @@ func main() {
 	}
 }
 
+// UploadToS3 - uploads files to the s3 bucket and directory specified by the constants
 func UploadToS3(fileDir string, uploadedFileName string) error {
 	// Get the session
 	s, err := session.NewSession(&aws.Config{Region: aws.String(S3Region)})
@@ -152,12 +161,14 @@ func UploadToS3(fileDir string, uploadedFileName string) error {
 	return err
 }
 
+// ZipFiles - Zips up the files provided and writes them to the filename provided
+// Expects a "/" directory seperated string - and takes the second to last value as a parent directory - and attempts to create it
 func ZipFiles(filename string, files []string) error {
 	// Make the parent directory
 	filenameParts := strings.Split(filename, "/")
 	parentDir := filenameParts[len(filenameParts)-2]
 
-	fmt.Println("creating directory " + parentDir)
+	fmt.Println("creating directory if not exists " + parentDir)
 
 	err := os.MkdirAll(fmt.Sprintf("%s/%s", strings.Join(filenameParts[:len(filenameParts)-2], "/"), parentDir), 0755)
 	if err != nil {
@@ -183,6 +194,7 @@ func ZipFiles(filename string, files []string) error {
 	return nil
 }
 
+// AddFileToZip - adds files to a zip file and writes them out
 func AddFileToZip(zipWriter *zip.Writer, filename string) error {
 
 	fileToZip, err := os.Open(filename)
