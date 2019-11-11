@@ -9,7 +9,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/user"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -20,7 +22,7 @@ const (
 	S3Region         = "eu-west-2"
 	S3Bucket         = "dfp-datalake-london"
 	bucketBasePath   = "dfp/raw/crime/data.police.uk"
-	defaultOutputDir = "~/Projects/go-scripts-output"
+	defaultOutputDir = "/Projects/go-scripts-output/send-files-to-s3"
 )
 
 func main() {
@@ -30,7 +32,9 @@ func main() {
 		sourceDirPath = os.Args[1]
 	}
 
-	outputPath := defaultOutputDir
+	usr, err := user.Current()
+
+	outputPath := usr.HomeDir + defaultOutputDir
 
 	// The 3rd output is the output directory
 	if len(os.Args) >= 3 {
@@ -42,6 +46,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	var wg sync.WaitGroup
+	var zipFiles [][2]string
 
 	for _, dateDirectory := range dateDirectories {
 		fmt.Println(dateDirectory.Name())
@@ -71,31 +78,52 @@ func main() {
 			monthFiles = append(monthFiles, resolvedPath+"/"+file.Name())
 		}
 
-		fmt.Println("compiled list of files:")
-		fmt.Print(monthFiles)
-		fmt.Print("\n\nzipping...\n")
+		log.Print("compiled list of files:")
+		log.Print(monthFiles)
+		log.Print(fmt.Sprintf("generating filenames from %s", dateDirectory.Name()))
 
 		YearDirName, fileName := GenerateFileName(dateDirectory.Name())
 		outputFile := fmt.Sprintf("%s/%s/%s.zip", outputPath, YearDirName, fileName)
 
-		if err := ZipFiles(outputFile, monthFiles); err != nil {
+		fmt.Print("\n\nzipping...\n")
+
+		wg.Add(1)
+
+		go func(outputFile string, monthFiles []string) {
+			defer wg.Done()
+
+			log.Print("zipping to file " + outputFile)
+			if err := ZipFiles(outputFile, monthFiles); err != nil {
+				log.Fatal(err)
+			}
+		}(outputFile, monthFiles)
+
+		zipFiles = append(zipFiles, [2]string{outputFile, fmt.Sprintf("%s/%s.zip", YearDirName, fileName)})
+	}
+
+	wg.Wait()
+
+	fmt.Print("sending to s3...")
+	fmt.Print(zipFiles)
+
+	for _, fileToUpload := range zipFiles {
+		log.Print(fmt.Sprintf("Uploading file to S3 %s to bucket %s, directory %s - filename %s", fileToUpload, S3Bucket, bucketBasePath, fileToUpload[1]))
+
+		if err := UploadToS3(fileToUpload[0], fileToUpload[1]); err != nil {
 			log.Fatal(err)
 		}
-
-		log.Print(fmt.Sprintf("Uploading file to S3 %s", outputFile))
-
-		UploadToS3(outputFile, fmt.Sprintf("%s/%s.zip", YearDirName, fileName))
-
-		break
 	}
 }
 
 func UploadToS3(fileDir string, uploadedFileName string) error {
+	// Get the session
 	s, err := session.NewSession(&aws.Config{Region: aws.String(S3Region)})
+
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
+	// Open the file
 	file, err := os.Open(fileDir)
 
 	if err != nil {
@@ -125,11 +153,22 @@ func UploadToS3(fileDir string, uploadedFileName string) error {
 }
 
 func ZipFiles(filename string, files []string) error {
+	// Make the parent directory
+	filenameParts := strings.Split(filename, "/")
+	parentDir := filenameParts[len(filenameParts)-2]
+
+	fmt.Println("creating directory " + parentDir)
+
+	err := os.MkdirAll(fmt.Sprintf("%s/%s", strings.Join(filenameParts[:len(filenameParts)-2], "/"), parentDir), 0755)
+	if err != nil {
+		return err
+	}
 
 	newZipFile, err := os.Create(filename)
 	if err != nil {
 		return err
 	}
+
 	defer newZipFile.Close()
 
 	zipWriter := zip.NewWriter(newZipFile)
@@ -181,6 +220,6 @@ func AddFileToZip(zipWriter *zip.Writer, filename string) error {
 
 // GenerateFileName - Generate a File name from a directory of format YYYY/MM eg. 2019-09
 func GenerateFileName(directoryName string) (string, string) {
-	pieces := strings.Split("-", directoryName)
+	pieces := strings.Split(directoryName, "-")
 	return pieces[0], pieces[1]
 }
